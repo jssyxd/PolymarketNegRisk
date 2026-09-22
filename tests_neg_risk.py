@@ -169,7 +169,7 @@ class TestNegRiskStrategies(unittest.TestCase):
         self.assertTrue(plan.is_structurally_safe)
         # Plan quotes: Bid=0.23, Ask=0.27
 
-        account = NegRiskPaperAccount(initial_capital=200.0, state_file="data/test_mm_state.json", events_file="data/test_mm_events.jsonl")
+        account = NegRiskPaperAccount(initial_capital=200.0, enable_maker=True, state_file="data/test_mm_state.json", events_file="data/test_mm_events.jsonl")
         # 1. Market order dumps into our Bid at 0.23 (Market best ask drops to 0.23) -> Buy fill!
         books_bid_hit = dict(books_initial)
         books_bid_hit["tok_1"] = BucketBook("tok_1", "<20", Decimal("0.21"), Decimal("0.23"), Decimal("100"), Decimal("50"), fetched_at=self.now)
@@ -184,6 +184,22 @@ class TestNegRiskStrategies(unittest.TestCase):
         fills_sell = account.process_maker_quotes(plan, books_ask_lift)
         self.assertGreater(fills_sell, 0)
         self.assertGreater(account.realized_pnl, 0.0)
+    def test_pure_arbitrage_mode_disables_maker_fills(self) -> None:
+        """When enable_maker is False, process_maker_quotes must strictly return 0."""
+        books_initial = {
+            "tok_1": BucketBook("tok_1", "<20", Decimal("0.24"), Decimal("0.26"), Decimal("100"), Decimal("50"), fetched_at=self.now),
+            "tok_2": BucketBook("tok_2", "20-22", Decimal("0.24"), Decimal("0.26"), Decimal("100"), Decimal("50"), fetched_at=self.now),
+            "tok_3": BucketBook("tok_3", "22-24", Decimal("0.24"), Decimal("0.26"), Decimal("100"), Decimal("50"), fetched_at=self.now),
+            "tok_4": BucketBook("tok_4", ">24", Decimal("0.24"), Decimal("0.26"), Decimal("100"), Decimal("50"), fetched_at=self.now),
+        }
+        mm = NegRiskMarketMaker(target_spread=Decimal("0.04"), quote_size_usdc=Decimal("5.0"))
+        plan = mm.generate_maker_plan(self.event, books_initial)
+        self.assertIsNotNone(plan)
+
+        account = NegRiskPaperAccount(initial_capital=200.0, enable_maker=False, state_file="data/test_pure_arb_state.json", events_file="data/test_pure_arb_events.jsonl")
+        fills = account.process_maker_quotes(plan, books_initial)
+        self.assertEqual(fills, 0)
+        self.assertEqual(len(account.inventory), 0)
 
 
 if __name__ == "__main__":

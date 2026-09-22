@@ -87,12 +87,14 @@ class NegRiskPaperAccount:
         initial_capital: float = 200.0,
         budget_per_order: float = 20.0,
         max_token_inventory_usdc: float = 15.0,  # Max inventory per token in USDC
+        enable_maker: bool = False,
         state_file: str = "data/negrisk_state.json",
         events_file: str = "data/negrisk_events.jsonl",
     ) -> None:
         self.initial_capital = initial_capital
         self.budget_per_order = budget_per_order
         self.max_token_inventory_usdc = max_token_inventory_usdc
+        self.enable_maker = enable_maker
         self.state_file = state_file
         self.events_file = events_file
 
@@ -108,6 +110,22 @@ class NegRiskPaperAccount:
         os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
         os.makedirs(os.path.dirname(os.path.abspath(self.events_file)), exist_ok=True)
         self.load_state()
+    def reset_account(self, initial_capital: float | None = None) -> None:
+        """Reset account to initial capital and wipe trade history."""
+        if initial_capital is not None:
+            self.initial_capital = initial_capital
+        self.cash_balance = self.initial_capital
+        self.realized_pnl = 0.0
+        self.total_trades = 0
+        self.maker_trades = 0
+        self.arb_trades = 0
+        self.inventory.clear()
+        self.basket_positions.clear()
+        self.save_state()
+        if os.path.exists(self.events_file):
+            with open(self.events_file, "w", encoding="utf-8") as f:
+                f.write("")
+        logger.info(f"Paper account reset to initial capital: {self.initial_capital} USDC")
 
     def load_state(self) -> None:
         if not os.path.exists(self.state_file):
@@ -266,7 +284,7 @@ class NegRiskPaperAccount:
         books: dict[str, BucketBook],
     ) -> int:
         """Process realistic two-sided Maker quoting, Bid fills, and Ask fills with inventory management."""
-        if not plan.is_structurally_safe or self.cash_balance < 3.0:
+        if not self.enable_maker or not plan.is_structurally_safe or self.cash_balance < 3.0:
             return 0
 
         fills_count = 0
@@ -371,14 +389,15 @@ class NegRiskPaperAccount:
         settled_count = 0
         now = time.time()
 
-        # Check unique event slugs across inventory and baskets
+        # Check unique event slugs across baskets (and inventory if maker enabled)
         all_slugs = set()
         for p in self.basket_positions.values():
             if p.status == "OPEN":
                 all_slugs.add(p.event_slug)
-        for inv in self.inventory.values():
-            if inv.shares > 0.0001:
-                all_slugs.add(inv.event_slug)
+        if self.enable_maker:
+            for inv in self.inventory.values():
+                if inv.shares > 0.0001:
+                    all_slugs.add(inv.event_slug)
 
         for slug in all_slugs:
             url = f"{GAMMA_EVENT_ENDPOINT}{slug}"
@@ -440,33 +459,34 @@ class NegRiskPaperAccount:
                         f"Net Profit: +{round(profit, 4)}U | Cash Balance: {round(self.cash_balance, 2)}U"
                     )
 
-            # 2. Settle Individual Token Inventories on this event
-            for tok, inv in list(self.inventory.items()):
-                if inv.event_slug == slug and inv.shares > 0.0001:
-                    is_winner = (resolved_winning_token is not None and tok == resolved_winning_token)
-                    payout = inv.shares * 1.00 if is_winner else 0.0
-                    realized = payout - inv.total_cost
+            # 2. Settle Individual Token Inventories on this event (only if maker enabled)
+            if self.enable_maker:
+                for tok, inv in list(self.inventory.items()):
+                    if inv.event_slug == slug and inv.shares > 0.0001:
+                        is_winner = (resolved_winning_token is not None and tok == resolved_winning_token)
+                        payout = inv.shares * 1.00 if is_winner else 0.0
+                        realized = payout - inv.total_cost
 
-                    self.cash_balance += payout
-                    self.realized_pnl += realized
-                    inv.shares = 0.0
-                    inv.total_cost = 0.0
-                    settled_count += 1
+                        self.cash_balance += payout
+                        self.realized_pnl += realized
+                        inv.shares = 0.0
+                        inv.total_cost = 0.0
+                        settled_count += 1
 
-                    self.log_event("paper_inventory_settled", {
-                        "event_slug": slug,
-                        "title": inv.event_title,
-                        "token_id": tok,
-                        "label": inv.label,
-                        "is_winner": is_winner,
-                        "payout_usdc": round(payout, 4),
-                        "realized_pnl_usdc": round(realized, 4),
-                        "cash_balance": round(self.cash_balance, 4),
-                    })
-                    logger.info(
-                        f"🎯 [INVENTORY SETTLED] {inv.event_title} [{inv.label}] | Winner: {is_winner} | "
-                        f"Payout: {payout}U | Realized: {round(realized, 4):+}U | Cash: {round(self.cash_balance, 2)}U"
-                    )
+                        self.log_event("paper_inventory_settled", {
+                            "event_slug": slug,
+                            "title": inv.event_title,
+                            "token_id": tok,
+                            "label": inv.label,
+                            "is_winner": is_winner,
+                            "payout_usdc": round(payout, 4),
+                            "realized_pnl_usdc": round(realized, 4),
+                            "cash_balance": round(self.cash_balance, 4),
+                        })
+                        logger.info(
+                            f"🎯 [INVENTORY SETTLED] {inv.event_title} [{inv.label}] | Winner: {is_winner} | "
+                            f"Payout: {payout}U | Realized: {round(realized, 4):+}U | Cash: {round(self.cash_balance, 2)}U"
+                        )
 
         if settled_count > 0:
             self.save_state()

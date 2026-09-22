@@ -34,7 +34,9 @@ class NegRiskEngine:
         max_book_skew_seconds: float = 0.300,
         probe_first: bool = True,
         dry_run: bool = True,
+        enable_maker: bool = False,
     ) -> None:
+        self.enable_maker = enable_maker
         self.scanner = NegRiskScanner(timeout_seconds=scanner_timeout)
         self.arb_engine = NegRiskArbitrageEngine(
             min_profit_pct=Decimal(str(min_arb_profit_pct)),
@@ -102,13 +104,14 @@ class NegRiskEngine:
                         if paper_account.open_arbitrage_basket(opp_short):
                             new_arb_opens += 1
 
-            # Evaluate Maker Plan & Execute Active Maker Quoting Fills
-            plan = self.maker_engine.generate_maker_plan(ev, event_books)
-            if plan is not None and plan.is_structurally_safe:
-                maker_plans.append(plan)
-                if paper_account is not None:
-                    fills = paper_account.process_maker_quotes(plan, event_books)
-                    new_maker_fills += fills
+            # Evaluate Maker Plan & Execute Active Maker Quoting Fills (if enabled)
+            if self.enable_maker:
+                plan = self.maker_engine.generate_maker_plan(ev, event_books)
+                if plan is not None and plan.is_structurally_safe:
+                    maker_plans.append(plan)
+                    if paper_account is not None:
+                        fills = paper_account.process_maker_quotes(plan, event_books)
+                        new_maker_fills += fills
 
         duration = round(time.time() - started_at, 2)
         return {

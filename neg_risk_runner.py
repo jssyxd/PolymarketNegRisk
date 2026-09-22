@@ -47,6 +47,8 @@ def main() -> None:
     parser.add_argument("--state-file", default="data/negrisk_state.json", help="Path to state file")
     parser.add_argument("--events-file", default="data/negrisk_events.jsonl", help="Path to events JSONL log")
     parser.add_argument("--health-file", default="data/negrisk_health.json", help="Path to health JSON snapshot")
+    parser.add_argument("--enable-maker", action="store_true", default=False, help="Enable two-sided market maker quoting (default: False, 100% pure complete-set arbitrage)")
+    parser.add_argument("--reset", action="store_true", default=False, help="Reset paper trading account to initial capital and clear trade history")
     args = parser.parse_args()
 
     stop_flag = False
@@ -62,9 +64,13 @@ def main() -> None:
     paper_account = NegRiskPaperAccount(
         initial_capital=args.initial_capital,
         budget_per_order=args.budget,
+        enable_maker=args.enable_maker,
         state_file=args.state_file,
         events_file=args.events_file,
     )
+
+    if args.reset:
+        paper_account.reset_account(args.initial_capital)
 
     engine = NegRiskEngine(
         min_arb_profit_pct=Decimal(str(args.min_profit_pct / 100.0)),
@@ -73,11 +79,13 @@ def main() -> None:
         max_book_skew_seconds=args.max_skew_ms / 1000.0,
         probe_first=True,
         dry_run=(args.mode == "paper"),
+        enable_maker=args.enable_maker,
     )
 
     logger.info(f"=== Polymarket Neg-Risk Engine [{args.mode.upper()}] Initialized ===")
+    strategy_mode_str = "Two-Sided Maker + Arbitrage" if args.enable_maker else "100% Pure Neg-Risk Convexity Arbitrage (Maker Disabled)"
     logger.info(
-        f"Config: Initial={args.initial_capital}U, Budget/Order={args.budget}U, "
+        f"Config: Mode={strategy_mode_str}, Initial={args.initial_capital}U, Budget/Order={args.budget}U, "
         f"Hurdle={args.min_profit_pct}%, MaxSkew={args.max_skew_ms}ms, Pipelined=True"
     )
     logger.info(f"Current Cash: {paper_account.cash_balance} USDC | Equity: {paper_account.get_summary()['total_equity_usdc']} USDC")
